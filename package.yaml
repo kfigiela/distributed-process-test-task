@@ -11,16 +11,20 @@ extra-source-files:
 library:
   source-dirs: src
   exposed-modules:
-  - Lib
+    - Message
+    - Collector
+    - Broadcaster
 dependencies:
   - base >=4.7 && <5
   - distributed-process
-  - distributed-process-p2p
+  - distributed-process-simplelocalnet
   - mtl
   - random
   - MonadRandom
   - time
   - binary-orphans
+  - lens
+  - monad-loops
 
 executables:
   distributed-process-test-exe:
@@ -30,3 +34,5 @@ executables:
     - -threaded
     - -rtsopts
     - -with-rtsopts=-N
+    dependencies:
+      - distributed-process-test

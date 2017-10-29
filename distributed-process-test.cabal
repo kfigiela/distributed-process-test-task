@@ -25,19 +25,23 @@ source-repository head
 library
   hs-source-dirs:
       src
-  exposed-modules:
-      Lib
-  other-modules:
-      Paths_distributed_process_test
   build-depends:
       base >=4.7 && <5
     , distributed-process
-    , distributed-process-p2p
+    , distributed-process-simplelocalnet
     , mtl
     , random
     , MonadRandom
     , time
     , binary-orphans
+    , lens
+    , monad-loops
+  exposed-modules:
+      Message
+      Collector
+      Broadcaster
+  other-modules:
+      Paths_distributed_process_test
   default-language: Haskell2010
 
 executable distributed-process-test-exe
@@ -48,10 +52,13 @@ executable distributed-process-test-exe
   build-depends:
       base >=4.7 && <5
     , distributed-process
-    , distributed-process-p2p
+    , distributed-process-simplelocalnet
     , mtl
     , random
     , MonadRandom
     , time
     , binary-orphans
+    , lens
+    , monad-loops
+    , distributed-process-test
   default-language: Haskell2010
