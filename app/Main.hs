@@ -90,10 +90,12 @@ mainProcess opts backend = do
 
     collectorPid <- spawnLocal collector
 
+    say "Discovering peers"
     spawnLocal $ peerManager knownPeers (opts ^. multicastDiscovery) backend
 
     sleepSeconds $ opts ^. connectFor
 
+    say "Starting broadcast"
     broadcasterPid <- spawnLocal $ broadcaster stdGen
 
     sleepSeconds $ opts ^. sendFor
@@ -107,7 +109,7 @@ mainProcess opts backend = do
     send collectorPid $ FinishRequest mainPid
     receiveWait [match $ \(FinishResponse result) -> say $ "Final result: " ++ show result]
 
-    say "All done"
+    -- say "All done"
     sleepSeconds 1 -- wait for stderr buffers to flush
 
 main :: IO ()

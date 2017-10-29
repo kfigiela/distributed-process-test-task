@@ -28,6 +28,7 @@ dependencies:
   - containers
   - bytestring
   - network-transport
+  - unordered-containers
 
 executables:
   dptt:

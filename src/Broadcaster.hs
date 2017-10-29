@@ -6,7 +6,7 @@ module Broadcaster where
 import           GHC.Generics
 
 import           Control.Concurrent          (threadDelay)
-import           Control.Distributed.Process (Process, ProcessId, getSelfPid,
+import           Control.Distributed.Process (Process, ProcessId, getSelfNode,
                                               match, nsendRemote,
                                               receiveTimeout, say, send)
 import           Control.Monad               (forM_)
@@ -36,9 +36,9 @@ findIndexM = findIndexM' 0 where
 
 broadcaster :: StdGen -> Process ()
 broadcaster g = do
-        self  <- getSelfPid
+        self  <- getSelfNode
         let values = randoms g
-            messages = Message self <$> [0..] <*> values
+            messages = zipWith (Message self) [0..] values
         (sentMsgs, replyTo) <- flip findIndexM messages $ \msg -> do
             shouldFinish <- receiveTimeout 0 [match $ \(FinishBroadcasting replyTo) -> return $ Just replyTo]
 
