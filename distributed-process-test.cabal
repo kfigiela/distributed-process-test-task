@@ -36,10 +36,13 @@ library
     , lens
     , options
     , containers
+    , bytestring
+    , network-transport
   exposed-modules:
       Message
       Collector
       Broadcaster
+      PeerManager
   other-modules:
       Paths_distributed_process_test
   default-language: Haskell2010
@@ -60,5 +63,7 @@ executable distributed-process-test-exe
     , lens
     , options
     , containers
+    , bytestring
+    , network-transport
     , distributed-process-test
   default-language: Haskell2010

@@ -5,7 +5,6 @@
 module Message where
 import           GHC.Generics
 
-
 import           Control.Distributed.Process (ProcessId)
 import           Control.Lens
 import           Data.Binary.Orphans         (Binary)
