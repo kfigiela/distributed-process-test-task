@@ -5,47 +5,19 @@
 module Collector where
 import           GHC.Generics
 
-
-import           Control.Distributed.Process                        (NodeId,
-                                                                     Process,
-                                                                     ProcessId,
-                                                                     expect,
-                                                                     getSelfPid,
-                                                                     match,
-                                                                     nsendRemote,
-                                                                     receiveWait,
-                                                                     register,
-                                                                     say, send,
-                                                                     spawnLocal)
-import           Control.Distributed.Process.Node                   (forkProcess,
-                                                                     initRemoteTable,
-                                                                     runProcess)
+import           Control.Distributed.Process (Process, getSelfPid, match,
+                                              receiveWait, register, say)
 import           Control.Lens
-import           Control.Monad                                      (forM_,
-                                                                     forever,
-                                                                     mapM_,
-                                                                     void)
-import           Data.Time.Clock                                    (UTCTime, getCurrentTime)
-import qualified Data.Time.Clock                                    as Clock
-import           System.Environment                                 (getArgs)
+import           Control.Monad               (forM_, forever, void)
+import           Control.Monad.Trans         (lift, liftIO)
 
-import           Control.Concurrent                                 (threadDelay)
-import           Control.Distributed.Process.Backend.SimpleLocalnet
-import           Control.Distributed.Process.Serializable           (Serializable)
--- import           Control.Monad.Random                               (Random,
---                                                                      getRandom)
-import           Control.Monad.Trans                                (lift,
-                                                                     liftIO)
-import           Control.Monad.Trans.Random.Strict                  (RandT,
-                                                                     evalRandT)
-import           Data.Binary.Orphans                                (Binary)
-import           Data.Typeable                                      (Typeable)
-import           System.Random                                      (StdGen,
-                                                                     mkStdGen,
-                                                                     randoms)
 
-import           Control.Monad.Loops                                (iterateUntilM)
-import           Data.Maybe                                         (isNothing)
+import           Data.Binary.Orphans         (Binary)
+import           Data.Set                    (Set)
+import qualified Data.Set                    as Set
+import           Data.Time.Clock             (UTCTime, getCurrentTime)
+import qualified Data.Time.Clock             as Clock
+import           Data.Typeable               (Typeable)
 
 import           Message
 
@@ -53,21 +25,31 @@ whileRightM :: Monad m => Either b a -> (a -> m (Either b a)) -> m b
 whileRightM (Left result) action = return result
 whileRightM (Right state) action = action state >>= flip whileRightM action
 
-newtype State = State { _messages :: [Message] } deriving (Generic, Typeable, Binary, Show)
+newtype State = State { _messages :: Set Message } deriving (Generic, Typeable, Binary, Show)
 
 makeLenses ''State
 
-initState = State []
+initState = State Set.empty
 
 data FinishRequest = FinishRequest deriving (Generic, Typeable, Binary, Show)
 
-processMessage :: State -> Message -> Process (Either Int State)
-processMessage state message = return $ Right $ state & messages %~ (message:)
+type Result = (Int, Double)
 
-processFinish :: State -> FinishRequest -> Process (Either Int State)
+computeScore :: State -> Double
+computeScore State { _messages = messages } = snd $ Set.foldr' f (1, 0.0) messages where
+    f Message { _value = value} (ix, acc) = (ix + 1, acc + ix * value)
+
+computeResult :: State -> Result
+computeResult state@State { _messages = messages } = (Set.size messages, computeScore state)
+
+processMessage :: State -> Message -> Process (Either Result State)
+processMessage state message = return $ Right $ state & messages %~ Set.insert message
+
+processFinish :: State -> FinishRequest -> Process (Either Result State)
 processFinish state message = do
-    say $ show $ length $ state ^. messages
-    return $ Left $ length $ state ^. messages
+    let result = computeResult state
+    say $ show result
+    return $ Left result
 
 collector :: Process ()
 collector = void $ do

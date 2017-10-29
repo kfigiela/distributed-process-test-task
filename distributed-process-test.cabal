@@ -31,11 +31,11 @@ library
     , distributed-process-simplelocalnet
     , mtl
     , random
-    , MonadRandom
     , time
     , binary-orphans
     , lens
-    , monad-loops
+    , options
+    , containers
   exposed-modules:
       Message
       Collector
@@ -55,10 +55,10 @@ executable distributed-process-test-exe
     , distributed-process-simplelocalnet
     , mtl
     , random
-    , MonadRandom
     , time
     , binary-orphans
     , lens
-    , monad-loops
+    , options
+    , containers
     , distributed-process-test
   default-language: Haskell2010

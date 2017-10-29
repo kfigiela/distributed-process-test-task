@@ -20,11 +20,11 @@ dependencies:
   - distributed-process-simplelocalnet
   - mtl
   - random
-  - MonadRandom
   - time
   - binary-orphans
   - lens
-  - monad-loops
+  - options
+  - containers
 
 executables:
   distributed-process-test-exe:

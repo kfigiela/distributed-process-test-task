@@ -1,52 +1,34 @@
-{-# LANGUAGE DeriveAnyClass  #-}
-{-# LANGUAGE DeriveGeneric   #-}
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric  #-}
 
 module Broadcaster where
+
+import           Control.Concurrent          (threadDelay)
+import           Control.Distributed.Process (NodeId, Process, getSelfPid,
+                                              match, nsendRemote,
+                                              receiveTimeout, say)
+import           Control.Monad               (forM_, void)
+import           Control.Monad.Trans         (liftIO)
+import           Data.Time.Clock             (getCurrentTime)
+import           Data.Typeable               (Typeable)
 import           GHC.Generics
+import           System.Random               (StdGen, randoms)
+
+import           Data.Binary.Orphans         (Binary)
+import           Message                     (Message (..))
 
 
-import           Control.Distributed.Process                        (NodeId,
-                                                                     Process,
-                                                                     ProcessId,
-                                                                     expect,
-                                                                     getSelfPid,
-                                                                     match,
-                                                                     nsendRemote,
-                                                                     receiveWait,
-                                                                     register,
-                                                                     say, send,
-                                                                     spawnLocal)
-import           Control.Distributed.Process.Node                   (forkProcess,
-                                                                     initRemoteTable,
-                                                                     runProcess)
-import           Control.Lens
-import           Control.Monad                                      (forM_,
-                                                                     forever,
-                                                                     mapM_,
-                                                                     void)
-import           Data.Time.Clock                                    (UTCTime, getCurrentTime)
-import qualified Data.Time.Clock                                    as Clock
-import           System.Environment                                 (getArgs)
+data FinishBroadcasting = FinishBroadcasting deriving (Generic, Typeable, Binary)
 
-import           Control.Concurrent                                 (threadDelay)
-import           Control.Distributed.Process.Backend.SimpleLocalnet
-import           Control.Distributed.Process.Serializable           (Serializable)
--- import           Control.Monad.Random                               (Random,
---                                                                      getRandom)
-import           Control.Monad.Trans                                (lift,
-                                                                     liftIO)
-import           Control.Monad.Trans.Random.Strict                  (RandT,
-                                                                     evalRandT)
-import           Data.Binary.Orphans                                (Binary)
-import           Data.Typeable                                      (Typeable)
-import           System.Random                                      (StdGen,
-                                                                     mkStdGen,
-                                                                     randoms)
+findIndexM :: Monad m => (a -> m Bool) -> [a] -> m Int
+findIndexM = findIndexM' 0 where
+    findIndexM' count check [] = return count
+    findIndexM' count check (h:t) = do
+        result <- check h
+        if result
+        then return count
+        else findIndexM' (count + 1) check t
 
-import           Control.Monad.Loops                                (iterateUntilM)
-import           Data.Maybe                                         (isNothing)
-import           Message                                            (Message (..))
 
 
 broadcaster :: [NodeId] -> String -> StdGen -> Process ()
@@ -55,10 +37,18 @@ broadcaster peers port g = do
         self <- getSelfPid
         let values = randoms g
             messages = Message self <$> [0..] <*> values
+        sentMsgs <- flip findIndexM messages $ \msg -> do
+            shouldFinish <- receiveTimeout 0 [match $ \FinishBroadcasting -> return True]
 
-        forM_ messages $ \msg -> do
-            -- say $ "known peers: " ++ show (length peers)
-            liftIO $ threadDelay 1000
-            currentTime <- liftIO getCurrentTime
-            let msg' = msg currentTime
-            forM_ peers $ \peer -> nsendRemote peer "collector" msg'
+            case shouldFinish of
+                Nothing -> do
+                    liftIO $ threadDelay 1000
+                    -- say $ "known peers: " ++ show (length peers)
+                    currentTime <- liftIO getCurrentTime
+                    let msg' = msg currentTime
+                    forM_ peers $ \peer -> nsendRemote peer "collector" msg'
+                    return False
+                Just _ -> do
+                    say "Broadcast stopped"
+                    return True
+        say $ "sent " ++ show sentMsgs
