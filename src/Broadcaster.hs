@@ -25,7 +25,7 @@ newtype FinishBroadcasting = FinishBroadcasting   ProcessId deriving (Generic, T
 newtype BroadcastFinished  = BroadcastFinished    Int       deriving (Generic, Typeable, Binary)
 
 findIndexM :: Monad m => (a -> m (Maybe b)) -> [a] -> m (Int, Maybe b)
-findIndexM = findIndexM' 0 where 
+findIndexM = findIndexM' 0 where
     findIndexM' count check [] = return (count, Nothing)
     findIndexM' count check (h:t) = do
         result <- check h

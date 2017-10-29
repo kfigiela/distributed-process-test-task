@@ -2,25 +2,25 @@
 --
 -- see: https://github.com/sol/hpack
 
-name:                distributed-process-test
-version:             0.1.0.0
-homepage:            https://github.com/githubuser/distributed-process-test#readme
-bug-reports:         https://github.com/githubuser/distributed-process-test/issues
-license:             BSD3
-license-file:        LICENSE
-author:              Author name here
-maintainer:          example@example.com
-copyright:           2017 Author name here
-category:            Web
-build-type:          Simple
-cabal-version:       >= 1.10
+name:           distributed-process-test-task
+version:        0.1.0.0
+category:       Web
+homepage:       https://github.com/kfigiela/distributed-process-test-task#readme
+bug-reports:    https://github.com/kfigiela/distributed-process-test-task/issues
+author:         Kamil Figiela
+maintainer:     kamil.figiela@gmail.com
+copyright:      2017 Kamil Figiela
+license:        BSD3
+license-file:   LICENSE
+build-type:     Simple
+cabal-version:  >= 1.10
 
 extra-source-files:
     README.md
 
 source-repository head
   type: git
-  location: https://github.com/githubuser/distributed-process-test
+  location: https://github.com/kfigiela/distributed-process-test-task
 
 library
   hs-source-dirs:
@@ -44,13 +44,13 @@ library
       Broadcaster
       PeerManager
   other-modules:
-      Paths_distributed_process_test
+      Paths_distributed_process_test_task
   default-language: Haskell2010
 
-executable distributed-process-test-exe
+executable dptt
+  main-is: Main.hs
   hs-source-dirs:
       app
-  main-is: Main.hs
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       base >=4.7 && <5
@@ -65,5 +65,5 @@ executable distributed-process-test-exe
     , containers
     , bytestring
     , network-transport
-    , distributed-process-test
+    , distributed-process-test-task
   default-language: Haskell2010
