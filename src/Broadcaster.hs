@@ -4,9 +4,9 @@
 module Broadcaster where
 
 import           Control.Concurrent          (threadDelay)
-import           Control.Distributed.Process (NodeId, Process, getSelfPid,
-                                              match, nsendRemote,
-                                              receiveTimeout, say)
+import           Control.Distributed.Process (NodeId, Process, ProcessId,
+                                              getSelfPid, match, nsendRemote,
+                                              receiveTimeout, say, send)
 import           Control.Monad               (forM_, void)
 import           Control.Monad.Trans         (liftIO)
 import           Data.Time.Clock             (getCurrentTime)
@@ -18,16 +18,17 @@ import           Data.Binary.Orphans         (Binary)
 import           Message                     (Message (..))
 
 
-data FinishBroadcasting = FinishBroadcasting deriving (Generic, Typeable, Binary)
+newtype FinishBroadcasting   = FinishBroadcasting   ProcessId deriving (Generic, Typeable, Binary)
+newtype BroadcastFinished = BroadcastFinished Int       deriving (Generic, Typeable, Binary)
 
-findIndexM :: Monad m => (a -> m Bool) -> [a] -> m Int
+findIndexM :: Monad m => (a -> m (Maybe b)) -> [a] -> m (Int, Maybe b)
 findIndexM = findIndexM' 0 where
-    findIndexM' count check [] = return count
+    findIndexM' count check [] = return (count, Nothing)
     findIndexM' count check (h:t) = do
         result <- check h
-        if result
-        then return count
-        else findIndexM' (count + 1) check t
+        case result of
+            Just value -> return (count, Just value)
+            Nothing    -> findIndexM' (count + 1) check t
 
 
 
@@ -37,8 +38,8 @@ broadcaster peers port g = do
         self <- getSelfPid
         let values = randoms g
             messages = Message self <$> [0..] <*> values
-        sentMsgs <- flip findIndexM messages $ \msg -> do
-            shouldFinish <- receiveTimeout 0 [match $ \FinishBroadcasting -> return True]
+        (sentMsgs, replyTo) <- flip findIndexM messages $ \msg -> do
+            shouldFinish <- receiveTimeout 0 [match $ \(FinishBroadcasting replyTo) -> return $ Just replyTo]
 
             case shouldFinish of
                 Nothing -> do
@@ -47,8 +48,9 @@ broadcaster peers port g = do
                     currentTime <- liftIO getCurrentTime
                     let msg' = msg currentTime
                     forM_ peers $ \peer -> nsendRemote peer "collector" msg'
-                    return False
-                Just _ -> do
+                    return Nothing
+                Just mayReplyTo -> do
                     say "Broadcast stopped"
-                    return True
+                    return mayReplyTo
         say $ "sent " ++ show sentMsgs
+        forM_ replyTo $ flip send $ BroadcastFinished sentMsgs

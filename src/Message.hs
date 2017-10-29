@@ -14,9 +14,9 @@ import           Data.Ord                    (comparing)
 import           Data.Time.Clock             (UTCTime)
 import           Data.Typeable               (Typeable)
 
-data Message = Message { _source :: ProcessId, _sequence :: Int, _value :: Double, _timestamp :: UTCTime} deriving (Generic, Typeable, Binary, Show, Eq)
+data Message = Message { _source :: ProcessId, _sequenceNumber :: Int, _value :: Double, _timestamp :: UTCTime} deriving (Generic, Typeable, Binary, Show, Eq)
 
 makeLenses ''Message
 
 instance Ord Message where
-    compare = comparing (view timestamp) <> comparing (view source)
+    compare = comparing (view timestamp) <> comparing (view source) <> comparing (view sequenceNumber)

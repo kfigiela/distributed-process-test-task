@@ -5,8 +5,9 @@
 module Collector where
 import           GHC.Generics
 
-import           Control.Distributed.Process (Process, getSelfPid, match,
-                                              receiveWait, register, say)
+import           Control.Distributed.Process (Process, ProcessId, getSelfPid,
+                                              match, receiveWait, register, say,
+                                              send)
 import           Control.Lens
 import           Control.Monad               (forM_, forever, void)
 import           Control.Monad.Trans         (lift, liftIO)
@@ -31,9 +32,11 @@ makeLenses ''State
 
 initState = State Set.empty
 
-data FinishRequest = FinishRequest deriving (Generic, Typeable, Binary, Show)
-
 type Result = (Int, Double)
+
+newtype FinishRequest = FinishRequest ProcessId deriving (Generic, Typeable, Binary, Show)
+newtype FinishResponse = FinishResponse Result deriving (Generic, Typeable, Binary, Show)
+
 
 computeScore :: State -> Double
 computeScore State { _messages = messages } = snd $ Set.foldr' f (1, 0.0) messages where
@@ -46,9 +49,10 @@ processMessage :: State -> Message -> Process (Either Result State)
 processMessage state message = return $ Right $ state & messages %~ Set.insert message
 
 processFinish :: State -> FinishRequest -> Process (Either Result State)
-processFinish state message = do
+processFinish state (FinishRequest replyTo) = do
     let result = computeResult state
     say $ show result
+    send replyTo $ FinishResponse result
     return $ Left result
 
 collector :: Process ()
