@@ -1,8 +1,0 @@
-#!/bin/sh
-
- stack exec distributed-process-test-exe 127.0.0.1 10000 peers/master.txt &
- stack exec distributed-process-test-exe 127.0.0.1 10001 peers/1.txt &
- stack exec distributed-process-test-exe 127.0.0.1 10002 peers/1.txt &
- stack exec distributed-process-test-exe 127.0.0.1 10003 peers/1.txt &
- stack exec distributed-process-test-exe 127.0.0.1 10004 peers/1.txt &
- stack exec distributed-process-test-exe 127.0.0.1 10005 peers/1.txt &

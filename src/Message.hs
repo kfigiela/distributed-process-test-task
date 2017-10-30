@@ -14,6 +14,7 @@ import           Data.Time.Clock             (UTCTime)
 import           Data.Typeable               (Typeable)
 
 data Message = Message { _source :: NodeId, _sequenceNumber :: Int, _value :: Double, _timestamp :: UTCTime} deriving (Generic, Typeable, Binary, Show, Eq)
+newtype NoMoreMessages = NoMoreMessages NodeId deriving (Generic, Typeable, Binary, Show, Eq)
 
 makeLenses ''Message
 

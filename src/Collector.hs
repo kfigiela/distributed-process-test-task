@@ -9,20 +9,17 @@ import           Control.Distributed.Process (NodeId, Process, ProcessId,
                                               getSelfPid, match, nsendRemote,
                                               receiveWait, register, say, send)
 import           Control.Lens
-import           Control.Monad               (forM_, forever, unless, void,
-                                              when)
-import           Control.Monad.Trans         (lift, liftIO)
-
+import           Control.Monad               (unless, void)
 
 import           Data.Binary.Orphans         (Binary)
-import           Data.Foldable               (minimumBy)
+import           Data.Foldable               (maximumBy, minimumBy)
 import           Data.Function               (on)
 import           Data.HashMap.Strict         (HashMap)
 import qualified Data.HashMap.Strict         as HashMap
+import           Data.Maybe                  (fromMaybe)
 import           Data.Set                    (Set)
 import qualified Data.Set                    as Set
-import           Data.Time.Clock             (UTCTime, getCurrentTime)
-import qualified Data.Time.Clock             as Clock
+import           Data.Time.Clock             (UTCTime)
 import           Data.Typeable               (Typeable)
 
 import           Message
@@ -31,33 +28,42 @@ whileRightM :: Monad m => Either b a -> (a -> m (Either b a)) -> m b
 whileRightM (Left result) action = return result
 whileRightM (Right state) action = action state >>= flip whileRightM action
 
-data State = State { _messages            :: Set Message
-                   , _lastSequence        :: HashMap NodeId Int
-                   , _precomputedAcc      :: Double
-                   , _precomputedCount    :: Int
-                   , _precomputedMaximums :: HashMap NodeId (Int, UTCTime)
+data State = State { _messages            :: !(Set Message)
+                   , _lastSequence        :: !(HashMap NodeId Int)
+                   , _nodesThatFinished   :: !(Set NodeId)
+                   , _precomputedAcc      :: !Double
+                   , _precomputedCount    :: !Int
+                   , _precomputedMaximums :: !(HashMap NodeId (Int, UTCTime))
+                   , _parentPid           :: ProcessId
                    } deriving (Generic, Typeable, Binary, Show)
 
 makeLenses ''State
 
-initState = State Set.empty HashMap.empty 0.0 0 HashMap.empty
+initState :: ProcessId -> State
+initState = State Set.empty HashMap.empty Set.empty 0.0 0 HashMap.empty
 
 type Result = (Int, Double)
 
-newtype FinishRequest  = FinishRequest ProcessId deriving (Generic, Typeable, Binary, Show)
-newtype FinishResponse = FinishResponse Result   deriving (Generic, Typeable, Binary, Show)
+data FinalizeRequest  = FinalizeRequest  deriving (Generic, Typeable, Binary, Show)
+data PrecomputeResultRequest = PrecomputeResultRequest deriving (Generic, Typeable, Binary, Show)
+newtype FinalResult = FinalResult Result   deriving (Generic, Typeable, Binary, Show)
 
 data    RetransmissionRequest  = RetransmissionRequest ProcessId NodeId Int Int deriving (Generic, Typeable, Binary, Show)
 newtype RetransmissionResponse = RetransmissionResponse [Message]               deriving (Generic, Typeable, Binary, Show)
 
 
-computeScore :: State -> Double
-computeScore State { _messages = messages } = snd $ Set.foldr' f (1, 0.0) messages where
-    f Message { _value = value} (ix, acc) = (ix + 1, acc + (fromIntegral ix) * value)
+serviceName :: String
+serviceName = "collector"
+
+computeScore :: Set Message -> Double
+computeScore messages = snd $ Set.foldl' f (0, 0.0) messages where
+    f (ix, acc) Message { _value = value} = (newIx, acc + fromIntegral newIx * value) where
+        newIx = ix + 1
 
 computeScore' :: Set Message -> (Int, Double) -> (Int, Double)
-computeScore' messages (cix, acc) = Set.foldr' f (cix, acc) messages where
-    f Message { _value = value} (ix, acc) = (ix + 1, acc + (fromIntegral ix) * value)
+computeScore' messages (cix, acc) = Set.foldl f (cix, acc) messages where
+    f (ix, acc) Message { _value = value} = (newIx, acc + fromIntegral newIx * value) where
+        newIx = ix + 1
 
 computeResult :: State -> Result
 computeResult state@State { _messages = messages } = computeScore' messages (state ^. precomputedCount, state ^. precomputedAcc)
@@ -72,55 +78,71 @@ precomputeResult state = state & messages            .~ remainingMessages
 
         oldMessages = state ^. messages
 
-        (messagesToPrecompute, remainingMessages) = Set.spanAntitone (\msg -> msg ^. timestamp <= cutoff) oldMessages
+        (messagesToPrecompute, remainingMessages) = Set.spanAntitone (\msg -> msg ^. timestamp < minTimestamp) oldMessages
 
-        cutoff :: UTCTime
-        (_, cutoff) = minimumBy (compare `on` snd) newMaximums
+        minTimestamp, maxTimestamp :: UTCTime
+        (_, minTimestamp) = minimumBy (compare `on` snd) newMaximums
+        (_, maxTimestamp) = maximumBy (compare `on` snd) newMaximums
+
         newMaximums = computeMaximums (state ^. precomputedMaximums) oldMessages
 
         computeMaximums :: HashMap NodeId (Int, UTCTime) -> Set Message -> HashMap NodeId (Int, UTCTime)
-        computeMaximums acc list = Set.foldl' action acc list where
-            action :: HashMap NodeId (Int, UTCTime) -> Message -> HashMap NodeId (Int, UTCTime)
-            action acc msg = if shouldIncrement
+        computeMaximums = Set.foldl' f where
+            f :: HashMap NodeId (Int, UTCTime) -> Message -> HashMap NodeId (Int, UTCTime)
+            f acc msg = if shouldIncrement
                             then acc & at (msg ^. source) ?~ (msg ^. sequenceNumber, msg ^. timestamp)
                             else acc
                 where
+                    shouldIncrement = fromMaybe True $ isSequential <$> lastSequential
                     lastSequential = acc ^. at (msg ^. source)
-                    shouldIncrement = case lastSequential of
-                        Nothing           -> True
-                        Just (lastSeq, _) -> msg ^. sequenceNumber == lastSeq + 1
+                    isSequential (lastSeq, _) = msg ^. sequenceNumber == lastSeq + 1
 
 
 requestRetransmission :: NodeId -> Int -> Int -> Process ()
 requestRetransmission node from to = do
     self <- getSelfPid
-    say $ "Requestin retransmission: " ++ (show node) ++ " range: " ++ (show from) ++ " - " ++ (show to)
-    nsendRemote node "collector" $ RetransmissionRequest self node from to
+    nsendRemote node serviceName $ RetransmissionRequest self node from to
+    say $ "Requesting retransmission from " ++ (show node) ++ " in range from " ++ (show from) ++ " to " ++ (show to)
+
+hasFinished :: State -> Bool
+hasFinished state = Set.size (state ^. nodesThatFinished) == HashMap.size (state ^. lastSequence)
+
+processPrecomputeResult :: State -> PrecomputeResultRequest -> Process (Either Result State)
+processPrecomputeResult state _ = do
+    let newState = precomputeResult state
+
+    if hasFinished newState
+        then do
+            say "Got results ahead of time"
+            finalize newState
+        else return $ Right newState
+
+optimizationThreshold :: Int
+optimizationThreshold = 1000 -- messages
+
+optimizeState :: State -> Process (State)
+optimizeState state =
+    if length (state ^. messages) > optimizationThreshold
+        then do
+            let optimizedState = precomputeResult state
+            say $ "Optimized from " ++ show (length $ state ^. messages) ++ " to " ++ show (length $ optimizedState ^. messages)
+            return optimizedState
+        else return state
+
 
 processMessage :: State -> Message -> Process (Either Result State)
 processMessage state message = do
-    let lastSeq = state ^. lastSequence . at nodeId
-        nodeId = message ^. source
+    let newState   = state & messages                 %~ Set.insert message
+                           & lastSequence . at nodeId ?~ currentSeq
         currentSeq = message ^. sequenceNumber
-        state' = state & messages                 %~ Set.insert message
-                       & lastSequence . at nodeId ?~ currentSeq
+        nodeId     = message ^. source
+        requestRetransmissionIfNeeded = unless (currentSeq - 1 == lastSeq) $ requestRetransmission nodeId lastSeq currentSeq
+            where lastSeq    = fromMaybe 0 $ state ^. lastSequence . at nodeId
 
-    state'' <-  if (length $ state ^. messages) > 10000
-                    then do
-                        say "Optimizing"
-                        let newState = precomputeResult state'
-                        say $ "Optimized from " ++ (show $ length $ state ^. messages) ++ " to " ++ (show $ length $ newState ^. messages)
-                        return newState
-                    else return state'
+    requestRetransmissionIfNeeded
 
-    case lastSeq of
-        Nothing ->
-            unless (currentSeq == 0) $ requestRetransmission nodeId 0 currentSeq
-        Just lastSeq ->
-            unless (currentSeq == lastSeq + 1) $ requestRetransmission nodeId lastSeq currentSeq
-
-
-    return $ Right state''
+    optimizedState <- optimizeState newState
+    return $ Right optimizedState
 
 processRetransmissionRequest :: State -> RetransmissionRequest -> Process (Either Result State)
 processRetransmissionRequest state (RetransmissionRequest replyTo nodeId from to) = do
@@ -135,21 +157,29 @@ processRetransmissionResponse state (RetransmissionResponse newMessages) = do
     say $ "Got some retransmission  " ++ (show $ length newMessages)
     return $ Right $ state & messages %~ Set.union (Set.fromList newMessages)
 
-processFinish :: State -> FinishRequest -> Process (Either Result State)
-processFinish state (FinishRequest replyTo) = do
+processNoMoreMessages :: State -> NoMoreMessages -> Process (Either Result State)
+processNoMoreMessages state (NoMoreMessages nodeId) = do
+    return $ Right $ state & nodesThatFinished %~ Set.insert nodeId
+
+finalize :: State -> Process (Either Result State)
+finalize state = do
     let result = computeResult state
-    -- say $ show result
-    send replyTo $ FinishResponse result
+    send (state ^. parentPid) $ FinalResult result
     return $ Left result
 
-collector :: Process ()
-collector = void $ do
-    collectorPid <- getSelfPid
-    register "collector" collectorPid
+processFinalize :: State -> FinalizeRequest -> Process (Either Result State)
+processFinalize state FinalizeRequest = finalize state
 
-    whileRightM (Right initState) (\state ->
-            receiveWait [ match $ processFinish state
+collector :: ProcessId -> Process ()
+collector parent = void $ do
+    collectorPid <- getSelfPid
+    register serviceName collectorPid
+
+    whileRightM (Right $ initState parent) (\state ->
+            receiveWait [ match $ processFinalize state
+                        , match $ processPrecomputeResult state
                         , match $ processMessage state
+                        , match $ processNoMoreMessages state
                         , match $ processRetransmissionResponse state
                         , match $ processRetransmissionRequest  state
                         ]

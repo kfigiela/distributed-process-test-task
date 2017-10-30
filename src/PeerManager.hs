@@ -4,6 +4,8 @@
 
 module PeerManager (peerManager, getPeers) where
 
+import           Control.Concurrent                                 (threadDelay)
+
 import           Control.Distributed.Process                        (NodeId,
                                                                      Process,
                                                                      ProcessId,
@@ -33,7 +35,7 @@ import           GHC.Generics
 newtype GetPeers  = GetPeers ProcessId deriving (Generic, Typeable, Binary)
 newtype GetPeersReply = GetPeersReply [NodeId] deriving (Generic, Typeable, Binary)
 newtype DiscoveredPeers = DiscoveredPeers [NodeId]  deriving (Generic, Typeable, Binary)
-newtype HelloRemote = HelloRemote [NodeId]  deriving (Generic, Typeable, Binary)
+data    HelloRemote = HelloRemote NodeId [NodeId]  deriving (Generic, Typeable, Binary)
 
 newtype State = State { _peers :: Set NodeId }
 
@@ -50,12 +52,12 @@ multicastManager :: ProcessId -> Backend -> Process ()
 multicastManager parent backend =
     forever $ do
         peers <- liftIO $ findPeers backend 1000000
-        say $ "got peers " ++ show (length peers)
+        say $ "Multicast: got peers " ++ show (length peers)
         send parent $ DiscoveredPeers peers
 
 
-sendHello :: NodeId -> [NodeId] -> Process ()
-sendHello nodeId myPeers = nsendRemote nodeId serviceName $ HelloRemote myPeers
+sendHello :: NodeId -> [NodeId] -> NodeId -> Process ()
+sendHello me myPeers nodeId = nsendRemote nodeId serviceName $ HelloRemote me myPeers
 
 loop :: State -> Process State
 loop state = do
@@ -73,15 +75,25 @@ peerManager knownPeers useMulticast backend = do
 
     when useMulticast $ void $ spawnLocal $ multicastManager self backend
 
-    forM_ knownPeers $ flip sendHello (me:knownPeers)
-    send self $ DiscoveredPeers (me:knownPeers)
+    forM_ knownPeers $ \peer -> nsendRemote peer serviceName $ DiscoveredPeers (me:knownPeers)
+    -- sendHello me (me:knownPeers)
+    spawnLocal $ broadcastPeersListProcess me
 
-    void $ loop initState
+    void $ loop $ State $ Set.fromList (me:knownPeers)
 
 getPeersHandler :: State -> GetPeers -> Process State
 getPeersHandler state (GetPeers replyTo) = do
-    send replyTo $ GetPeersReply $ Set.toList $ state ^. peers
+    send replyTo $ GetPeersReply $ Set.toAscList $ state ^. peers
     return state
+
+broadcastPeersListProcess :: NodeId -> Process ()
+broadcastPeersListProcess me =
+    forever $ do
+        liftIO $ threadDelay 300000
+        knownPeers <- getPeers
+        forM_ knownPeers $ \knownPeers ->
+            forM_ knownPeers $ \peer ->
+                when (peer /= me) $ nsendRemote peer serviceName $ DiscoveredPeers knownPeers
 
 discoveredPeersHandler :: State -> DiscoveredPeers -> Process State
 discoveredPeersHandler state (DiscoveredPeers newPeers) = do
@@ -91,8 +103,8 @@ discoveredPeersHandler state (DiscoveredPeers newPeers) = do
         newKnownPeers = Set.union knownPeers $ Set.fromList newPeers
 
     when (knownPeers /= newKnownPeers) $ do
-        say $ "Got new peers: old " ++ (show $ Set.size knownPeers) ++ " vs new " ++ (show $ Set.size newKnownPeers)
-        let newPeerList = Set.toList newKnownPeers
+        say $ "Got new peers: " ++ (show $ Set.size newKnownPeers) ++ " " ++ (show newKnownPeers)
+        let newPeerList = Set.toAscList newKnownPeers
         forM_ newKnownPeers $ \peer ->
             when (peer /= me) $ nsendRemote peer serviceName $ DiscoveredPeers newPeerList
 
@@ -100,7 +112,9 @@ discoveredPeersHandler state (DiscoveredPeers newPeers) = do
 
 
 helloRemoteHandler :: State -> HelloRemote -> Process State
-helloRemoteHandler state (HelloRemote newPeers) = discoveredPeersHandler state (DiscoveredPeers newPeers)
+helloRemoteHandler state (HelloRemote nodeId newPeers) = do
+    say $ "Got hello from " ++ show nodeId
+    discoveredPeersHandler state (DiscoveredPeers newPeers)
 
 
 

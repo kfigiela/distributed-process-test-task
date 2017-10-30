@@ -13,6 +13,7 @@ import           Control.Distributed.Process                        (NodeId (..)
                                                                      exit,
                                                                      getSelfPid,
                                                                      match,
+                                                                     receiveTimeout,
                                                                      receiveWait,
                                                                      say, send,
                                                                      spawnLocal)
@@ -23,18 +24,21 @@ import           Control.Distributed.Process.Backend.SimpleLocalnet (Backend,
 import           Control.Distributed.Process.Node                   (initRemoteTable,
                                                                      runProcess)
 import           Control.Lens
+import           Control.Monad                                      (forM_,
+                                                                     void)
 import           Control.Monad.Trans                                (liftIO)
+import qualified Data.ByteString.Char8                              as BS
+import           Numeric                                            (showFFloat)
+import           Options
 import           System.Random                                      (mkStdGen)
 
 import           Broadcaster                                        (BroadcastFinished (..),
                                                                      FinishBroadcasting (..),
                                                                      broadcaster)
-import           Collector                                          (FinishRequest (..),
-                                                                     FinishResponse (..),
+import           Collector                                          (FinalResult (..),
+                                                                     FinalizeRequest (..),
+                                                                     PrecomputeResultRequest (..),
                                                                      collector)
-import qualified Data.ByteString.Char8                              as BS
-
-import           Options
 import           PeerManager                                        (peerManager)
 
 data MainOptions = MainOptions { _sendFor            :: Int
@@ -69,8 +73,10 @@ instance Options MainOptions where
             "Whether to use multicast discovery in addition to peer exchange"
 
 sleepSeconds :: Int -> Process ()
-sleepSeconds t = liftIO $ threadDelay $ 1000000 * t
+sleepSeconds t = sleepMilis $ 1000 * t
 
+sleepMilis :: Int -> Process ()
+sleepMilis t = liftIO $ threadDelay $ 1000 * t
 
 makeNodeId :: String -> NodeId
 makeNodeId addr = NodeId . EndPointAddress . BS.concat $ [BS.pack addr, ":0"]
@@ -88,7 +94,7 @@ mainProcess opts backend = do
 
     knownPeers <- readPeers $ opts ^. peersFile
 
-    collectorPid <- spawnLocal collector
+    collectorPid <- spawnLocal $ collector mainPid
 
     say "Discovering peers"
     spawnLocal $ peerManager knownPeers (opts ^. multicastDiscovery) backend
@@ -100,16 +106,23 @@ mainProcess opts backend = do
 
     sleepSeconds $ opts ^. sendFor
 
-    send broadcasterPid $ FinishBroadcasting mainPid
-    receiveWait [match $ \(BroadcastFinished sentMsgs) -> say $ "Sent messages: " ++ show sentMsgs]
+    send broadcasterPid FinishBroadcasting
 
-    sleepSeconds $  opts ^. waitFor
+    spawnLocal $ do
+        let precomputeRequestCount = (opts ^. waitFor) * 4 - 2
 
-    say "Finish collecting"
-    send collectorPid $ FinishRequest mainPid
-    receiveWait [match $ \(FinishResponse result) -> say $ "Final result: " ++ show result]
+        forM_ [1..precomputeRequestCount] $ \_ -> do
+            send collectorPid PrecomputeResultRequest
+            sleepMilis 250
 
-    -- say "All done"
+        send collectorPid FinalizeRequest
+
+    mayResult <- receiveTimeout (1000000 * opts ^. waitFor) [match $ \(FinalResult result) -> return result]
+
+    case mayResult of
+        Just (count, score) -> say $ "(" ++ show count ++ ", " ++ (Numeric.showFFloat Nothing score "") ++ ")"
+        Nothing             -> say "Timed out"
+
     sleepSeconds 1 -- wait for stderr buffers to flush
 
 main :: IO ()
