@@ -61,7 +61,7 @@ instance Options MainOptions where
             "How many seconds the system waits for undelivered messages."
         <*> simpleOption "with-seed" 1
             "Random number generator seed"
-        <*> simpleOption "connect-for" 5
+        <*> simpleOption "connect-for" 0
             "Time to discover other peers"
         <*> simpleOption "host" "127.0.0.1"
             "Hostname for local node"
@@ -89,23 +89,23 @@ readPeers (Just path) = do
 
 mainProcess :: MainOptions -> Backend -> Process ()
 mainProcess opts backend = do
-    let stdGen = mkStdGen $ opts ^. drngSeed
     mainPid <- getSelfPid
-
-    knownPeers <- readPeers $ opts ^. peersFile
 
     collectorPid <- spawnLocal $ collector mainPid
 
     say "Discovering peers"
+    knownPeers <- readPeers $ opts ^. peersFile
     spawnLocal $ peerManager knownPeers (opts ^. multicastDiscovery) backend
 
     sleepSeconds $ opts ^. connectFor
 
     say "Starting broadcast"
+    let stdGen = mkStdGen $ opts ^. drngSeed
     broadcasterPid <- spawnLocal $ broadcaster stdGen
 
     sleepSeconds $ opts ^. sendFor
 
+    say "Finish broadcast"
     send broadcasterPid FinishBroadcasting
 
     spawnLocal $ do
@@ -119,9 +119,9 @@ mainProcess opts backend = do
 
     mayResult <- receiveTimeout (1000000 * opts ^. waitFor) [match $ \(FinalResult result) -> return result]
 
-    case mayResult of
-        Just (count, score) -> say $ "(" ++ show count ++ ", " ++ (Numeric.showFFloat Nothing score "") ++ ")"
-        Nothing             -> say "Timed out"
+    liftIO $ putStrLn $ case mayResult of
+        Just (count, score) ->  "(" ++ show count ++ ", " ++ Numeric.showFFloat Nothing score "" ++ ")"
+        Nothing             ->  "No result. Timed out"
 
     sleepSeconds 1 -- wait for stderr buffers to flush
 

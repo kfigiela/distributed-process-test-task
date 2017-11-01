@@ -52,8 +52,9 @@ broadcaster g = do
                     forM_ peers $ mapM_ $ \peer -> nsendRemote peer Collector.serviceName msg'
                     return False
                 Just _ -> do
-                    say "Broadcast stopped"
+                    say "Broadcast finished"
                     return True
-        say $ "sent " ++ show sentMsgs
+
         peers <- getPeers
         forM_ peers $ mapM_ $ \peer -> nsendRemote peer Collector.serviceName $ NoMoreMessages self
+        say $ "Sent " ++ show sentMsgs ++ " messages in total"
