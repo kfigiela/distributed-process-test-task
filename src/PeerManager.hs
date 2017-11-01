@@ -82,7 +82,7 @@ getStateHandler state (GetState replyTo) = do
     return state
 
 broadcastPeersInterval :: Int
-broadcastPeersInterval = 300000
+broadcastPeersInterval = 100000
 
 broadcastPeersListProcess :: ProcessId -> Process ()
 broadcastPeersListProcess parent = do

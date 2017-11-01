@@ -28,19 +28,20 @@ whileRightM :: Monad m => Either b a -> (a -> m (Either b a)) -> m b
 whileRightM (Left result) action = return result
 whileRightM (Right state) action = action state >>= flip whileRightM action
 
-data State = State { _messages            :: !(Set Message)
-                   , _lastSequence        :: !(HashMap NodeId Int)
-                   , _nodesThatFinished   :: !(Set NodeId)
-                   , _precomputedAcc      :: !Double
-                   , _precomputedCount    :: !Int
-                   , _precomputedMaximums :: !(HashMap NodeId (Int, UTCTime))
-                   , _parentPid           :: ProcessId
+data State = State { _messages             :: !(Set Message)
+                   , _lastSequence         :: !(HashMap NodeId Int)
+                   , _nodesThatFinished    :: !(Set NodeId)
+                   , _precomputedAcc       :: !Double
+                   , _precomputedCount     :: !Int
+                   , _precomputedThreshold :: !(Maybe UTCTime)
+                   , _precomputedMaximums  :: !(HashMap NodeId (Int, UTCTime))
+                   , _parentPid            :: ProcessId
                    } deriving (Generic, Typeable, Binary, Show)
 
 makeLenses ''State
 
 initState :: ProcessId -> State
-initState = State Set.empty HashMap.empty Set.empty 0.0 0 HashMap.empty
+initState = State Set.empty HashMap.empty Set.empty 0.0 0 Nothing HashMap.empty
 
 type Result = (Int, Double)
 
@@ -69,10 +70,11 @@ computeResult :: State -> Result
 computeResult state@State { _messages = messages } = computeScore' messages (state ^. precomputedCount, state ^. precomputedAcc)
 
 precomputeResult :: Maybe Int -> State -> State
-precomputeResult forceAt state = state & messages            .~ remainingMessages
-                                     & precomputedAcc      .~ newAcc
-                                     & precomputedCount    .~ newCount
-                                     & precomputedMaximums .~ newMaximums
+precomputeResult forceAt state = state & messages             .~ remainingMessages
+                                       & precomputedAcc       .~ newAcc
+                                       & precomputedCount     .~ newCount
+                                       & precomputedMaximums  .~ newMaximums
+                                       & precomputedThreshold ?~ minTimestamp
     where
         (newCount, newAcc) = computeScore' messagesToPrecompute (state ^. precomputedCount, state ^. precomputedAcc)
 
@@ -148,15 +150,21 @@ processMessage :: State -> Message -> Process (Either Result State)
 processMessage state message = do
     let newState   = state & messages                 %~ Set.insert message
                            & lastSequence . at nodeId ?~ currentSeq
+        acceptMessage = maybe True (< (message ^. timestamp)) (state ^. precomputedThreshold)
         currentSeq = message ^. sequenceNumber
         nodeId     = message ^. source
         requestRetransmissionIfNeeded = unless (currentSeq - 1 == lastSeq) $ requestRetransmission nodeId lastSeq currentSeq
             where lastSeq    = fromMaybe 0 $ state ^. lastSequence . at nodeId
 
-    requestRetransmissionIfNeeded
+    if acceptMessage
+    then do
+        requestRetransmissionIfNeeded
 
-    optimizedState <- optimizeState newState
-    return $ Right optimizedState
+        optimizedState <- optimizeState newState
+        return $ Right optimizedState
+    else do
+        say "Rejected message: already precomputed"
+        return $ Right state
 
 processRetransmissionRequest :: State -> RetransmissionRequest -> Process (Either Result State)
 processRetransmissionRequest state (RetransmissionRequest replyTo nodeId from to) = do
