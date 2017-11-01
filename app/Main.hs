@@ -32,9 +32,9 @@ import           Numeric                                            (showFFloat)
 import           Options
 import           System.Random                                      (mkStdGen)
 
-import           Broadcaster                                        (BroadcastFinished (..),
-                                                                     FinishBroadcasting (..),
-                                                                     broadcaster)
+import           Broadcaster                                        (broadcaster)
+import           Broadcaster.API                                    (BroadcastFinished (..),
+                                                                     FinishBroadcasting (..))
 import           Collector                                          (FinalResult (..),
                                                                      FinalizeRequest (..),
                                                                      PrecomputeResultRequest (..),

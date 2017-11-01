@@ -6,55 +6,68 @@ module Broadcaster where
 import           GHC.Generics
 
 import           Control.Concurrent          (threadDelay)
-import           Control.Distributed.Process (Process, ProcessId, getSelfNode,
+import           Control.Distributed.Process (NodeId, Process, ProcessId,
+                                              expect, getSelfNode, getSelfPid,
                                               match, nsendRemote,
-                                              receiveTimeout, say, send)
+                                              receiveTimeout, register, say,
+                                              send)
 import           Control.Monad               (forM_)
 import           Control.Monad.Trans         (liftIO)
-import           Data.Time.Clock             (getCurrentTime)
+import           Data.Time.Clock             (UTCTime, getCurrentTime)
 import           Data.Typeable               (Typeable)
 import           System.Random               (StdGen, randoms)
 
 import           Data.Binary.Orphans         (Binary)
 
+import           Broadcaster.API
 import qualified Collector                   (serviceName)
 import           Message                     (Message (..), NoMoreMessages (..))
 import           PeerManager                 (getPeers)
+import qualified Services
+
+countWhileJustM_ :: Monad m => (a -> b -> m (Maybe b)) -> b -> [a] -> m Int
+countWhileJustM_ = countWhileJustM' 0 where
+    countWhileJustM' count check _ [] = return count
+    countWhileJustM' count check state (h:t) = do
+        result <- check h state
+        case result of
+            Just state' -> countWhileJustM' (count + 1) check state' t
+            Nothing     -> return count
 
 
-data    FinishBroadcasting = FinishBroadcasting             deriving (Generic, Typeable, Binary)
-newtype BroadcastFinished  = BroadcastFinished    Int       deriving (Generic, Typeable, Binary)
+broadcasterLoop :: (UTCTime -> Message) -> [NodeId] -> Process (Maybe [NodeId])
+broadcasterLoop msg peers = do
+    currentTime <- liftIO getCurrentTime
+    liftIO $ threadDelay 1 -- without this I run out of file descriptors when running locally larger number of nodes, WTF?
+    let msg' = msg currentTime
+    forM_ peers $ \peer -> nsendRemote peer Collector.serviceName msg'
 
-findIndexM :: Monad m => (a -> m Bool) -> [a] -> m (Int, Bool)
-findIndexM = findIndexM' 0 where
-    findIndexM' count check [] = return (count, False)
-    findIndexM' count check (h:t) = do
-        result <- check h
-        if result
-            then return (count, True)
-            else findIndexM' (count + 1) check t
+    gotMessage <- receiveTimeout 0 [ match $ \FinishBroadcasting     -> return (True,  peers)
+                                   , match $ \(NewPeerList newPeers) -> return (False, newPeers)]
+
+    case gotMessage of
+        Nothing -> return $ Just peers
+        Just (True, _) -> do
+            say "Broadcast finished"
+            localNode  <- getSelfNode
+            forM_ peers $ \peer -> nsendRemote peer Collector.serviceName $ NoMoreMessages localNode
+            return Nothing
+        Just (False, newPeers) -> do
+            say $ "Broadcaster got new peers"
+            return $ Just newPeers
 
 
 broadcaster :: StdGen -> Process ()
 broadcaster g = do
-        self  <- getSelfNode
-        let values = randoms g
-            messages = zipWith (Message self) [0..] values
-        (sentMsgs, replyTo) <- flip findIndexM messages $ \msg -> do
-            shouldFinish <- receiveTimeout 0 [match $ \FinishBroadcasting -> return  True]
+    self <- getSelfPid
+    register Services.broadcaster self
 
-            case shouldFinish of
-                Nothing -> do
-                    -- liftIO $ threadDelay 1000
-                    peers <- getPeers -- TODO: move this to local state and retreive by messages
-                    currentTime <- liftIO getCurrentTime
-                    let msg' = msg currentTime
-                    forM_ peers $ mapM_ $ \peer -> nsendRemote peer Collector.serviceName msg'
-                    return False
-                Just _ -> do
-                    say "Broadcast finished"
-                    return True
+    localNode  <- getSelfNode
+    let values = randoms g
+        messages = zipWith (Message localNode) [1..] values
 
-        peers <- getPeers
-        forM_ peers $ mapM_ $ \peer -> nsendRemote peer Collector.serviceName $ NoMoreMessages self
-        say $ "Sent " ++ show sentMsgs ++ " messages in total"
+    peers <- getPeers
+
+    sentMsgs <- countWhileJustM_ broadcasterLoop peers messages
+
+    say $ "Sent " ++ show sentMsgs ++ " messages in total"

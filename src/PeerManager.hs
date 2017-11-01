@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveAnyClass  #-}
 {-# LANGUAGE DeriveGeneric   #-}
+{-# LANGUAGE LambdaCase      #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 module PeerManager (peerManager, getPeers) where
@@ -9,6 +10,8 @@ import           Control.Concurrent                                 (threadDelay
 import           Control.Distributed.Process                        (NodeId,
                                                                      Process,
                                                                      ProcessId,
+                                                                     expect,
+                                                                     expectTimeout,
                                                                      getSelfNode,
                                                                      getSelfPid,
                                                                      match,
@@ -21,9 +24,10 @@ import           Control.Distributed.Process                        (NodeId,
 import           Control.Distributed.Process.Backend.SimpleLocalnet (Backend,
                                                                      findPeers)
 import           Control.Lens
-import           Control.Monad                                      (forM,
-                                                                     forM_,
+import           Control.Monad                                      (forM_,
                                                                      forever,
+                                                                     mapM,
+                                                                     unless,
                                                                      void, when)
 import           Control.Monad.Trans                                (liftIO)
 import           Data.Binary.Orphans                                (Binary)
@@ -32,96 +36,99 @@ import qualified Data.Set                                           as Set
 import           Data.Typeable                                      (Typeable)
 import           GHC.Generics
 
-newtype GetPeers  = GetPeers ProcessId deriving (Generic, Typeable, Binary)
-newtype GetPeersReply = GetPeersReply [NodeId] deriving (Generic, Typeable, Binary)
-newtype DiscoveredPeers = DiscoveredPeers [NodeId]  deriving (Generic, Typeable, Binary)
-data    HelloRemote = HelloRemote NodeId [NodeId]  deriving (Generic, Typeable, Binary)
+import qualified Broadcaster.API                                    as Broadcaster
+import qualified Services
 
-newtype State = State { _peers :: Set NodeId }
-
+data State = State { _peers :: Set NodeId, _connectedPeers :: Set NodeId } deriving (Generic, Typeable, Binary, Show)
 makeLenses ''State
 
-initState :: State
-initState = State Set.empty
-
-
-serviceName :: String
-serviceName = "peer-manager"
+newtype GetState  = GetState ProcessId deriving (Generic, Typeable, Binary)
+newtype GetStateReply = GetStateReply State deriving (Generic, Typeable, Binary)
+data DiscoveredPeers = DiscoveredPeers NodeId [NodeId]  deriving (Generic, Typeable, Binary)
 
 multicastManager :: ProcessId -> Backend -> Process ()
-multicastManager parent backend =
+multicastManager parent backend = do
+    me <- getSelfNode
     forever $ do
         peers <- liftIO $ findPeers backend 1000000
         say $ "Multicast: got peers " ++ show (length peers)
-        send parent $ DiscoveredPeers peers
+        send parent $ DiscoveredPeers me peers
 
-
-sendHello :: NodeId -> [NodeId] -> NodeId -> Process ()
-sendHello me myPeers nodeId = nsendRemote nodeId serviceName $ HelloRemote me myPeers
 
 loop :: State -> Process State
 loop state = do
-    newState <- receiveWait [ match $ getPeersHandler        state
+    newState <- receiveWait [ match $ getStateHandler        state
                             , match $ discoveredPeersHandler state
-                            , match $ helloRemoteHandler     state
                             ]
     loop newState
 
 peerManager :: [NodeId] -> Bool -> Backend -> Process ()
 peerManager knownPeers useMulticast backend = do
     self <- getSelfPid
-    me <- getSelfNode
-    register serviceName self
+    localNode <- getSelfNode
+    register Services.peerManager self
+
 
     when useMulticast $ void $ spawnLocal $ multicastManager self backend
+    spawnLocal $ broadcastPeersListProcess self
 
-    forM_ knownPeers $ \peer -> nsendRemote peer serviceName $ DiscoveredPeers (me:knownPeers)
-    -- sendHello me (me:knownPeers)
-    spawnLocal $ broadcastPeersListProcess me
+    let allPeers = localNode:knownPeers
 
-    void $ loop $ State $ Set.fromList (me:knownPeers)
+    void $ loop $ State (Set.fromList allPeers) (Set.fromList [localNode])
 
-getPeersHandler :: State -> GetPeers -> Process State
-getPeersHandler state (GetPeers replyTo) = do
-    send replyTo $ GetPeersReply $ Set.toAscList $ state ^. peers
+getStateHandler :: State -> GetState -> Process State
+getStateHandler state (GetState replyTo) = do
+    send replyTo $ GetStateReply state
     return state
 
-broadcastPeersListProcess :: NodeId -> Process ()
-broadcastPeersListProcess me =
+broadcastPeersInterval :: Int
+broadcastPeersInterval = 300000
+
+broadcastPeersListProcess :: ProcessId -> Process ()
+broadcastPeersListProcess parent = do
+    localNode <- getSelfNode
+    self <- getSelfPid
     forever $ do
-        liftIO $ threadDelay 300000
-        knownPeers <- getPeers
-        forM_ knownPeers $ \knownPeers ->
-            forM_ knownPeers $ \peer ->
-                when (peer /= me) $ nsendRemote peer serviceName $ DiscoveredPeers knownPeers
+        send parent $ GetState self
+        mayState <- expectTimeout broadcastPeersInterval
+        forM_ mayState $ \(GetStateReply state) -> do
+            let disconnectedPeers = Set.difference (state ^. peers) (state ^. connectedPeers)
+            forM_ disconnectedPeers $ \peer -> nsendRemote peer Services.peerManager $ DiscoveredPeers localNode (Set.toAscList $ state ^. peers)
+            liftIO $ threadDelay broadcastPeersInterval
 
 discoveredPeersHandler :: State -> DiscoveredPeers -> Process State
-discoveredPeersHandler state (DiscoveredPeers newPeers) = do
-    -- say "Got some discoveries"
-    me <- getSelfNode
-    let knownPeers = state ^. peers
-        newKnownPeers = Set.union knownPeers $ Set.fromList newPeers
+discoveredPeersHandler state (DiscoveredPeers source newPeers) = do
+    localNode <- getSelfNode
 
-    when (knownPeers /= newKnownPeers) $ do
-        say $ "Got new peers: " ++ (show $ Set.size newKnownPeers) ++ " " ++ (show newKnownPeers)
-        let newPeerList = Set.toAscList newKnownPeers
-        forM_ newKnownPeers $ \peer ->
-            when (peer /= me) $ nsendRemote peer serviceName $ DiscoveredPeers newPeerList
+    if source == localNode
+    then return state
+    else do
+        let knownPeers = state ^. peers
+            newKnownPeers = Set.union knownPeers $ Set.fromList newPeers
 
-    return $ state & peers .~ newKnownPeers
+        when (knownPeers /= newKnownPeers) $ do
+            say $ "Got new peers: " ++ (show $ Set.size newKnownPeers) ++ " " ++ (show newKnownPeers)
+            let newPeersList = Set.toAscList newKnownPeers
+            forM_ newKnownPeers $ \peer -> nsendRemote peer Services.peerManager $ DiscoveredPeers localNode $ newPeersList
 
+            sendPeerListToBroadcaster newPeersList
 
-helloRemoteHandler :: State -> HelloRemote -> Process State
-helloRemoteHandler state (HelloRemote nodeId newPeers) = do
-    say $ "Got hello from " ++ show nodeId
-    discoveredPeersHandler state (DiscoveredPeers newPeers)
+        return $ state & peers          .~ newKnownPeers
+                    & connectedPeers %~ Set.insert source
 
+sendPeerListToBroadcaster :: [NodeId] -> Process ()
+sendPeerListToBroadcaster nodes = do
+    mayBroadcasterPid <- whereis Services.broadcaster
+    forM_ mayBroadcasterPid $ \broadcasterPid -> send broadcasterPid $ Broadcaster.NewPeerList nodes
 
-
-getPeers :: Process (Maybe [NodeId])
-getPeers = do
-    pm <- whereis serviceName
-    forM pm $ \pm -> do
-        self <- getSelfPid
-        send pm $ GetPeers self
-        receiveWait [match $ \(GetPeersReply nodes) -> return nodes]
+getPeers :: Process [NodeId]
+getPeers = whereis Services.peerManager >>= query
+    where
+        query Nothing = do
+            liftIO $ threadDelay 10000
+            getPeers
+        query (Just processManagerPid) = do
+            self <- getSelfPid
+            send processManagerPid $ GetState self
+            GetStateReply state <- expect
+            return $ Set.toAscList $ state ^. peers

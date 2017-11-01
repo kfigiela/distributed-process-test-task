@@ -68,17 +68,19 @@ computeScore' messages (cix, acc) = Set.foldl f (cix, acc) messages where
 computeResult :: State -> Result
 computeResult state@State { _messages = messages } = computeScore' messages (state ^. precomputedCount, state ^. precomputedAcc)
 
-precomputeResult :: State -> State
-precomputeResult state = state & messages            .~ remainingMessages
-                               & precomputedAcc      .~ newAcc
-                               & precomputedCount    .~ newCount
-                               & precomputedMaximums .~ newMaximums
+precomputeResult :: Maybe Int -> State -> State
+precomputeResult forceAt state = state & messages            .~ remainingMessages
+                                     & precomputedAcc      .~ newAcc
+                                     & precomputedCount    .~ newCount
+                                     & precomputedMaximums .~ newMaximums
     where
         (newCount, newAcc) = computeScore' messagesToPrecompute (state ^. precomputedCount, state ^. precomputedAcc)
 
         oldMessages = state ^. messages
 
-        (messagesToPrecompute, remainingMessages) = Set.spanAntitone (\msg -> msg ^. timestamp < minTimestamp) oldMessages
+        (messagesToPrecompute, remainingMessages) = case forceAt of
+                                                        Just index -> Set.splitAt index oldMessages
+                                                        Nothing -> Set.spanAntitone (\msg -> msg ^. timestamp < minTimestamp) oldMessages
 
         minTimestamp, maxTimestamp :: UTCTime
         (_, minTimestamp) = minimumBy (compare `on` snd) newMaximums
@@ -109,7 +111,7 @@ hasFinished state = Set.size (state ^. nodesThatFinished) == HashMap.size (state
 
 processPrecomputeResult :: State -> PrecomputeResultRequest -> Process (Either Result State)
 processPrecomputeResult state _ = do
-    let newState = precomputeResult state
+    let newState = precomputeResult Nothing state
 
     if hasFinished newState
         then do
@@ -118,16 +120,28 @@ processPrecomputeResult state _ = do
         else return $ Right newState
 
 optimizationThreshold :: Int
-optimizationThreshold = 1000 -- messages
+optimizationThreshold = 10000 -- messages
+
+optimizationFrequency :: Int
+optimizationFrequency = 1000 -- messages
+
+forcedOptimizationRange :: Int
+forcedOptimizationRange = 2 * optimizationThreshold -- messages
+
+bufferLimit :: Int
+bufferLimit = 4 * optimizationThreshold -- messages
 
 optimizeState :: State -> Process (State)
-optimizeState state =
-    if length (state ^. messages) > optimizationThreshold
-        then do
-            let optimizedState = precomputeResult state
-            say $ "Optimized from " ++ show (length $ state ^. messages) ++ " to " ++ show (length $ optimizedState ^. messages)
-            return optimizedState
-        else return state
+optimizeState state
+    | length (state ^. messages) >= optimizationThreshold && length (state ^. messages) `mod` optimizationFrequency == 0 = do
+        let optimizedState = precomputeResult Nothing state
+        say $ "Optimized from " ++ show (length $ state ^. messages) ++ " to " ++ show (length $ optimizedState ^. messages)
+        return optimizedState
+    | length (state ^. messages) >= bufferLimit = do
+        let optimizedState = precomputeResult (Just forcedOptimizationRange) state
+        say $ "FORCED precomputation from " ++ show (length $ state ^. messages) ++ " to " ++ show (length $ optimizedState ^. messages)
+        return optimizedState
+    | otherwise = return state
 
 
 processMessage :: State -> Message -> Process (Either Result State)
@@ -158,8 +172,7 @@ processRetransmissionResponse state (RetransmissionResponse newMessages) = do
     return $ Right $ state & messages %~ Set.union (Set.fromList newMessages)
 
 processNoMoreMessages :: State -> NoMoreMessages -> Process (Either Result State)
-processNoMoreMessages state (NoMoreMessages nodeId) = do
-    return $ Right $ state & nodesThatFinished %~ Set.insert nodeId
+processNoMoreMessages state (NoMoreMessages nodeId) = return $ Right $ state & nodesThatFinished %~ Set.insert nodeId
 
 finalize :: State -> Process (Either Result State)
 finalize state = do
