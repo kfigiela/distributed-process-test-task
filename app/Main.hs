@@ -140,7 +140,7 @@ mainProcess opts backend = do
     mayResult <- expectTimeout (1000000 * opts ^. waitFor) :: Process (Maybe FinalResult)
 
     liftIO $ putStrLn $ case mayResult of
-        Just (count, score) ->  "(" ++ show count ++ ", " ++ Numeric.showFFloat Nothing score "" ++ ")"
+        Just (FinalResult (count, score)) ->  "(" ++ show count ++ ", " ++ Numeric.showFFloat Nothing score "" ++ ")"
         Nothing             ->  "No result. Timed out"
 
     sleepSeconds 1 -- wait for stderr buffers to flush

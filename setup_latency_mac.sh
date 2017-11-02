@@ -7,9 +7,9 @@ sudo pfctl -e
 (cat /etc/pf.conf && echo "dummynet-anchor \"mop\"" && echo "anchor \"mop\"") | sudo pfctl -f -
 
 ## Define "network failures"
-sudo dnctl pipe 1 config bw 64kbit/s plr 0.1  delay 800
-sudo dnctl pipe 2 config bw 10Mbit/s plr 0.01 delay 30
-sudo dnctl pipe 3 config bw 10Mbit/s plr 0.01 delay 200
+sudo dnctl pipe 1 config bw 10Mbit/s delay 500
+sudo dnctl pipe 2 config bw 10Mbit/s delay 30
+sudo dnctl pipe 3 config bw 10Mbit/s delay 200
 
 ## Map ports to network failures
 (
