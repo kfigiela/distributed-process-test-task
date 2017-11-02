@@ -23,24 +23,26 @@ import           Data.Time.Clock             (UTCTime)
 import           Data.Typeable               (Typeable)
 
 import           Message
+import           PeerManager                 (getPeers)
 
 whileRightM :: Monad m => Either b a -> (a -> m (Either b a)) -> m b
 whileRightM (Left result) action = return result
 whileRightM (Right state) action = action state >>= flip whileRightM action
 
-data State = State { _messages             :: !(Set Message)
-                   , _lastSequence         :: !(HashMap NodeId Int)
-                   , _nodesThatFinished    :: !(Set NodeId)
-                   , _precomputedAcc       :: !Double
-                   , _precomputedCount     :: !Int
-                   , _precomputedThreshold :: !(Maybe UTCTime)
-                   , _precomputedMaximums  :: !(HashMap NodeId (Int, UTCTime))
-                   , _parentPid            :: ProcessId
+data State = State { _messages               :: !(Set Message)
+                   , _lastSequence           :: !(HashMap NodeId Int)
+                   , _nodesThatFinished      :: !(Set NodeId)
+                   , _precomputedAcc         :: !Double
+                   , _precomputedCount       :: !Int
+                   , _precomputedThreshold   :: !(Maybe UTCTime)
+                   , _precomputedMaximums    :: !(HashMap NodeId (Int, UTCTime))
+                   , _parentPid              :: ProcessId
+                   , _bufferLengthMultiplier :: Int
                    } deriving (Generic, Typeable, Binary, Show)
 
 makeLenses ''State
 
-initState :: ProcessId -> State
+initState :: ProcessId -> Int -> State
 initState = State Set.empty HashMap.empty Set.empty 0.0 0 Nothing HashMap.empty
 
 type Result = (Int, Double)
@@ -113,37 +115,54 @@ hasFinished state = Set.size (state ^. nodesThatFinished) == HashMap.size (state
 
 processPrecomputeResult :: State -> PrecomputeResultRequest -> Process (Either Result State)
 processPrecomputeResult state _ = do
-    let newState = precomputeResult Nothing state
+    canPrecompute <- gotMessagesFromAllNodes state
+    if canPrecompute
+    then do
+        let newState = precomputeResult Nothing state
 
-    if hasFinished newState
-        then do
-            say "Got results ahead of time"
-            finalize newState
-        else return $ Right newState
+        if hasFinished newState
+            then do
+                say "Got results ahead of time"
+                finalize newState
+            else return $ Right newState
+    else return $ Right state
 
-optimizationThreshold :: Int
-optimizationThreshold = 10000 -- messages
+optimizationFrequency :: State -> Int
+optimizationFrequency s = 100 * s ^. bufferLengthMultiplier -- messages
 
-optimizationFrequency :: Int
-optimizationFrequency = 1000 -- messages
+optimizationThreshold :: State -> Int
+optimizationThreshold = (10 *) . optimizationFrequency -- messages
 
-forcedOptimizationRange :: Int
-forcedOptimizationRange = 2 * optimizationThreshold -- messages
+forcedOptimizationRange :: State -> Int
+forcedOptimizationRange = (5 *) . optimizationThreshold -- messages
 
-bufferLimit :: Int
-bufferLimit = 4 * optimizationThreshold -- messages
+bufferLimit :: State -> Int
+bufferLimit = (10 *) . optimizationThreshold -- messages
 
-optimizeState :: State -> Process (State)
-optimizeState state
-    | length (state ^. messages) >= optimizationThreshold && length (state ^. messages) `mod` optimizationFrequency == 0 = do
-        let optimizedState = precomputeResult Nothing state
-        say $ "Optimized from " ++ show (length $ state ^. messages) ++ " to " ++ show (length $ optimizedState ^. messages)
-        return optimizedState
-    | length (state ^. messages) >= bufferLimit = do
-        let optimizedState = precomputeResult (Just forcedOptimizationRange) state
-        say $ "FORCED precomputation from " ++ show (length $ state ^. messages) ++ " to " ++ show (length $ optimizedState ^. messages)
-        return optimizedState
-    | otherwise = return state
+gotMessagesFromAllNodes :: State -> Process Bool
+gotMessagesFromAllNodes state = do
+    knownPeers <- getPeers
+    return $ length knownPeers == HashMap.size (state ^. lastSequence)
+
+optimizeState :: State -> Process State
+optimizeState state = maybeOptimize where
+    maybeOptimize :: Process State
+    maybeOptimize = do
+        canOptimize <- gotMessagesFromAllNodes state
+        if canOptimize
+        then optimize
+        else return state
+    optimize :: Process State
+    optimize
+        | length (state ^. messages) >= (optimizationThreshold state) && length (state ^. messages) `mod` (optimizationFrequency state) == 0 = do
+            let optimizedState = precomputeResult Nothing state
+            say $ "Optimized from " ++ show (length $ state ^. messages) ++ " to " ++ show (length $ optimizedState ^. messages)
+            return optimizedState
+        | length (state ^. messages) >= (bufferLimit state) = do
+            let optimizedState = precomputeResult (Just $ forcedOptimizationRange state) state
+            say $ "FORCED precomputation from " ++ show (length $ state ^. messages) ++ " to " ++ show (length $ optimizedState ^. messages)
+            return optimizedState
+        | otherwise = return state
 
 
 processMessage :: State -> Message -> Process (Either Result State)
@@ -191,12 +210,12 @@ finalize state = do
 processFinalize :: State -> FinalizeRequest -> Process (Either Result State)
 processFinalize state FinalizeRequest = finalize state
 
-collector :: ProcessId -> Process ()
-collector parent = void $ do
+collector :: ProcessId -> Int -> Process ()
+collector parent bufferMult = void $ do
     collectorPid <- getSelfPid
     register serviceName collectorPid
 
-    whileRightM (Right $ initState parent) (\state ->
+    whileRightM (Right $ initState parent bufferMult) (\state ->
             receiveWait [ match $ processFinalize state
                         , match $ processPrecomputeResult state
                         , match $ processMessage state

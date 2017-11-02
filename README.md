@@ -3,7 +3,8 @@ While the goal of the task is well defined, it still has a lot of moving parts. 
 
 # Usage
 
-The project can be built with stack. The example startup script is provided (`run.sh`) for starting a few local nodes.
+The project can be built with stack. The node binary may be run with stack `stack exec -- dptt`. Explanation of all options is provied by `--help` option. The example startup script is provided (`run.sh`) for starting a few local nodes.
+
 
 # Assumptions & Design
 ## Timestamps & clock synchronization
@@ -24,7 +25,7 @@ This guarantees single ordering for any set of messages. On the other hand, node
 
 ## Communication
 
-In my implementation all nodes are equal, there is no single master node. All nodes are started independently. I decided to use peer-to-peer communication model (without using `distributed-process-p2p`  library which seems to be broken right now).
+In my implementation all nodes are equal, there is no single master node and nodes are not aware of all other nodes at start (or even of total size of the cluster). All nodes are started independently. I decided to use peer-to-peer communication model (without using `distributed-process-p2p` library which seems to be broken right now).
 
 I assume that all nodes are reachable in terms of network connectivity (firewalls, NATs, broken routing). This assumption could be loosened by implementing some sort of routing algorithm if no direct communication is possible. In some non-trivial version that could use the similar principles as routing protocols used in networks (like RIP, OSPF or BGP).
 
@@ -51,11 +52,10 @@ In order to prevent memory leaks I use strict version of fold and strict constru
 Another concern is receiver message buffer. Receiver maintains a buffer of incoming messages represented as a set. To make it possible to have really long runs of the program, I implement special algorithm to precompute result on the fly.
 
 For each known node, I compute maximum timestamp of continuous messages (means no message between was lost). Then I compute minimum of those (t_min). Since for all other nodes I have messages with newer timestamp, no messages from them will happen before t_min and I can safely compute partial result for all messages before it.
-Precomputing of results happen when the buffer size exceeds threshold value.
+Precomputing of results happen when the buffer size exceeds threshold value and is only performed if we got messages from all known peers.
 The drawback of this solution is that after precomputing result it is impossible to retransmit messages which are no longer in message buffer.
 
-This safe algorithm does not help if some nodes die and the buffer starts growing, since t_min will not be raising. In such case, there is another threshold and if it’s exceeded, I force precomputation of partial result for half that threshold. If missing messages are 
-delivered after result is precomputed they are discarded.
+This safe algorithm does not help if some nodes die and the buffer starts growing, since t_min will not be raising. In such case, there is another threshold and if it’s exceeded, I force precomputation of partial result for half that threshold. If missing messages are delivered after result is precomputed they are discarded. As we don't know number of peers in network upfront, this may happen when one of nodes connects late.
 
 ## Random numbers
 

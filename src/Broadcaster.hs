@@ -35,10 +35,10 @@ countWhileJustM_ = countWhileJustM' 0 where
             Nothing     -> return count
 
 
-broadcasterLoop :: (UTCTime -> Message) -> [NodeId] -> Process (Maybe [NodeId])
-broadcasterLoop msg peers = do
+broadcasterLoop :: Int -> (UTCTime -> Message) -> [NodeId] -> Process (Maybe [NodeId])
+broadcasterLoop delay msg peers = do
     currentTime <- liftIO getCurrentTime
-    liftIO $ threadDelay 1 -- without this I run out of file descriptors when running locally larger number of nodes, WTF?
+    liftIO $ threadDelay delay -- without this I run out of file descriptors when running locally larger number of nodes, WTF?
     let msg' = msg currentTime
     forM_ peers $ \peer -> nsendRemote peer Collector.serviceName msg'
 
@@ -53,12 +53,12 @@ broadcasterLoop msg peers = do
             forM_ peers $ \peer -> nsendRemote peer Collector.serviceName $ NoMoreMessages localNode
             return Nothing
         Just (False, newPeers) -> do
-            say $ "Broadcaster got new peers"
+            say "Broadcaster got new peers"
             return $ Just newPeers
 
 
-broadcaster :: StdGen -> Process ()
-broadcaster g = do
+broadcaster :: StdGen -> Int -> Process ()
+broadcaster g delay = do
     self <- getSelfPid
     register Services.broadcaster self
 
@@ -68,6 +68,6 @@ broadcaster g = do
 
     peers <- getPeers
 
-    sentMsgs <- countWhileJustM_ broadcasterLoop peers messages
+    sentMsgs <- countWhileJustM_ (broadcasterLoop delay) peers messages
 
     say $ "Sent " ++ show sentMsgs ++ " messages in total"

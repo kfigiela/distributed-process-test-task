@@ -1,4 +1,6 @@
 #!/bin/bash
 
-(cat /etc/pf.conf && echo "dummynet-anchor \"mop\"" && echo "anchor \"mop\"") | sudo pfctl -f -
+## Flush firewall
 echo | sudo pfctl -a mop -f -
+cat /etc/pf.conf | sudo pfctl -f -
+sudo dnctl -f flush
