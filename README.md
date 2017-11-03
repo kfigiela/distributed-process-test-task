@@ -1,7 +1,7 @@
 # CH/OTP Test Task
 by Kamil Figiela <kamil.figiela@gmail.com>
 
-While the goal of the task is well defined, it still has a lot of moving parts. Therefore I did a number of assumptions that I will cover in this document.
+While the goal of the task is well defined, it still has a lot of moving parts. Therefore I did a number of assumptions that I will discuss in this document.
 
 # Quick Start Guide
 
@@ -78,7 +78,7 @@ If only timestamp was used for ordering messages, different scores may be comput
 
 The messages contain random number, timestamp, sequence number and sending node id. I make an extra assumption to order messages not only by timestamp, but also by sending node id and sequence number being sent from particular node. 
 
-This guarantees single ordering for any set of messages. On the other hand, nodes with “lower” node id will have some preference over the others. This is not necessarily a good thing we want to have. Alternatively, we could sort messages by their value (random number) 
+This guarantees single ordering for any set of messages. On the other hand, nodes with “lower” node id will have some preference over the others. This is not necessarily a good thing and should be considered. Alternatively, we could sort messages by their value (random number)
 
 ## Communication
 
@@ -96,11 +96,11 @@ Point 2.3 of the task description suggests that nodes do not necessarily have up
 
 Each node may be provided with initial list of known nodes. To do this one needs to create a file in format `host:port` per line and it’s location is provided by `--peers-file knownPeers.txt`.
 
-After startup, nodes try to connect with all nodes supplied. They do this by sending their known peers list to the other node. Each node, upon receiving known nodes from the other node merges it to local known peers list. If it was modified by doing that, it sends this merged version to all known peers. Ultimately, all nodes should have the same peer list. While this protocol is suboptimal as it involves more communication than necessary, it still does its job.
+After startup, nodes try to connect with all nodes supplied. They do this by sending their known peers list to the other node. Each node, upon receiving known nodes from the other node merges it to local known peers list. If it was modified by doing that, it sends this merged version to all known peers. Ultimately, all nodes should have the same peer list. While this protocol is suboptimal as it involves more communication than necessary, it still does its job. My implementation does not consider nodes going down and being removed from the cluster during runtime.
 
 Additionally, known peers list is retransmitted to all known peers that have not yet responded a few times per second, to ensure a quick cluster warmup. 
 
-Nodes start to send data just after startup. For testing purposes, I allow for a certain warmup period for peer exchange (configured with `--connect-for` option, defaults to 0). After this period data transmission starts. However, this is not required for data consistency, since I implement retransmissions (as long as data to be retransmitted is in local buffer).
+Nodes start to send data just after startup. For testing purposes, I allow for a certain warmup period for peer exchange (configured with `--connect-for` option, defaults to 0). After this period data transmission starts. However, this is not required for data consistency, since I implement retransmissions (as long as data to be retransmitted is in local buffer). Using this delay may be particularly helpful wiht clusters running under rough network conditions.
 
 ## Retransmissions
 
@@ -116,7 +116,7 @@ For each known node, I compute maximum timestamp of continuous messages (means n
 Precomputing of results happen when the buffer size exceeds threshold value and is only performed if we got messages from all known peers.
 The drawback of this solution is that after precomputing result it is impossible to retransmit messages which are no longer in message buffer.
 
-This safe algorithm does not help if some nodes die and the buffer starts growing, since t_min will not be raising. In such case, there is another threshold and if it’s exceeded, I force precomputation of partial result for half that threshold. If missing messages are delivered after result is precomputed they are discarded. As we don't know number of peers in network upfront, this may happen when one of nodes connects late.
+This safe algorithm does not help if some nodes die or network is very bad and the buffer starts growing, since t_min will not be raising. In such case, there is another threshold and if it’s exceeded, I force precomputation of partial result for half that threshold. If missing messages are delivered after result is precomputed they are discarded. As we don't know number of peers in network upfront, this may happen when one of nodes connects late.
 
 ## Random Numbers
 
@@ -128,13 +128,13 @@ Nodes send extra message upon finishing sending messages. When receiver gets suc
 
 # Conclusions
 
-This not so complex distributed algorithm shows perfectly how many things have to be concerned when designing distributed system. The problem cannot be solved in a one way and assumptions, tradeoffs and arbitrary decisions have to be made. I did certain choices focusing on: data consistency (retransmissions), contained memory consumption (periodical precomputation), lack of central server (all nodes are equal).
+This not so complex distributed algorithm shows perfectly how many things have to be concerned when designing distributed system. The problem cannot be solved in a one ultimately true way and assumptions, tradeoffs and arbitrary decisions have to be made. I did certain choices focusing on: data consistency (retransmissions), contained memory consumption (periodical precomputation), lack of central server (all nodes are equal).
 
 I did testing on my local machine with simulated network conditions. The algorithm is provides consistent results most of the time, however there are some conditions that are likely to break things and should be subject for more detailed algorithm fine-tuning:
 
 * network latency combined with packet loss – TCP connection gets really slow,
     * it takes ages for node discovery – data loss is likely to happen since other nodes may precompute results without being aware of particular node even existing, this can be aided partially by setting `--connect-for`,
     * final messages arrive after deadline, aided by `--wait-for`,
-* nodes send messages too fast – especially on slow networks with some latency, data loss happens – throughput can be controlled with `--send-delay`,
+* nodes send messages too fast – especially on slow networks with some latency, data loss happens – throughput can be controlled with `--send-delay`.
 
 
