@@ -57,11 +57,11 @@ Application Options:
 
 # Network Latency Emulation
 
-On Mac network latency emulation for test setup (`run.sh`) may be set up with the `setup_latency_mac.sh` script and disabled with `disable_latency_mac.sh`. The scripts configure certain link conditions on particular TCP ports.
+On Mac, network latency emulation for test setup (`run.sh`) may be configured in pfctl/dnctl with the `setup_latency_mac.sh` script and disabled with `disable_latency_mac.sh`. The scripts configure certain link conditions on particular TCP ports.
 
 # Example execution log
 
-Recorded executon under network with latency condition is available at asciinema: https://asciinema.org/a/145610
+Recorded executon under log network with latency condition is available at asciinema: https://asciinema.org/a/145610
 
 # Assumptions & Design
 ## Timestamps & Clock Synchronization
@@ -125,6 +125,12 @@ All nodes can use different DRNG seed and it can be configured with `--with-seed
 ## Trailing Message
 
 Nodes send extra message upon finishing sending messages. When receiver gets such message from all nodes it can compute and display final result. Otherwise, the result will be computed just before final deadline.
+
+# Future Work
+
+* Fine tuning of configuration
+* Debug crash with `ioManagerDie: write: Bad file descriptor` and some other messages related do `kevent`. I don't think this is a bug in my code. This is not necessarily caused by bug in my code. I'd rather expect that this is a bug in either macOS, distributed-process or somewhere in Hasksell internals. So far, I tried increasing number of file descriptors with `ulimit` with no luck.
+* Resilience for permament network failures (no connectivity between nodes) – some sort of message routing if no direct path available.
 
 # Conclusions
 
